@@ -29,8 +29,8 @@ fn main() {
 ```
 To pass multiple loggers, use a bundling logger like `simplelog::CombinedLogger` for example.
 
-Make sure not to pass others loggers by using their respective `init` methods, but to use their `new` methods instead.
-You may not have registered any other logger with the log crate before as the ThreadedProxyLogger will take that place.
+Make sure not to pass other loggers by using their respective `init` methods, but to use their `new` methods instead.
+Do not register any other logger with the log crate before as the ThreadedProxyLogger will take that place.
 
 ## License
 

@@ -33,8 +33,6 @@
 //! The `ThreadedProxyLogger` will forward these messages to the proxied loggers in a separate thread.
 //!
 
-extern crate log;
-
 use std::{
     sync::mpsc::{Receiver, Sender},
     thread::{self, JoinHandle},
@@ -42,7 +40,7 @@ use std::{
 
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 
-/// A custom representation of the log::Record struct which is unfortunately
+/// A custom representation of the `log::Record` struct which is unfortunately
 /// not directly serializable (mostly due to the use of Arguments).
 /// Used to send data through the channel.
 struct RecordMsg {
@@ -55,7 +53,7 @@ struct RecordMsg {
 }
 
 impl RecordMsg {
-    fn new(
+    const fn new(
         level: Level,
         args: String,
         module_path: Option<String>,
@@ -81,9 +79,9 @@ enum MsgType {
     Shutdown,
 }
 
-/// A log::Log implementation that executes all logging on a separate thread.<p>
-/// Simply pass the actual logger in the call to ThreadedProxyLogger::init. To pass multiple loggers, pass
-/// an implementation like simplelog::CombinedLogger that bundles multiple loggers in one.</p>
+/// A `log::Log` implementation that executes all logging on a separate thread.<p>
+/// Simply pass the actual logger in the call to `ThreadedProxyLogger::init`. To pass multiple loggers, pass
+/// an implementation like `simplelog::CombinedLogger` that bundles multiple loggers in one.</p>
 pub struct ThreadedProxyLogger {
     tx: Sender<MsgType>,
     log_level: LevelFilter,
@@ -101,16 +99,17 @@ impl ThreadedProxyLogger {
     ///
     /// * `log_level` - The maximum log level that the logger will handle. Log messages with a level
     ///   higher than this will be ignored. This will also apply to the proxied logger even though it might have a higher log level set in its config.
-    /// * `proxied_logger` - The actual logger that the `ThreadedProxyLogger` will forward log messages to. Use a logger like simplelog::CombinedLogger to log to multiple loggers.
+    /// * `proxied_logger` - The actual logger that the `ThreadedProxyLogger` will forward log messages to. Use a logger like `simplelog::CombinedLogger` to log to multiple loggers.
     ///
     /// # Returns
     ///
     /// If successful, this function returns `Ok(())`. If another logger was already set for the `log` crate,
     /// this function returns `Err(SetLoggerError)`.
-    pub fn init(
-        log_level: LevelFilter,
-        proxied_logger: Box<dyn Log>,
-    ) -> Result<(), SetLoggerError> {
+    ///
+    /// # Errors
+    ///
+    /// See above
+    pub fn init(log_level: LevelFilter, proxied_logger: Box<dyn Log>) -> Result<(), SetLoggerError> {
         let (tx, rx) = std::sync::mpsc::channel();
         let join_handle = Self::start_thread(rx, proxied_logger);
 
@@ -130,7 +129,7 @@ impl ThreadedProxyLogger {
         thread::spawn(move || {
             while let Ok(message) = rx.recv() {
                 match message {
-                    MsgType::Data(message) => Self::log_record(message, &proxied_logger),
+                    MsgType::Data(message) => Self::log_record(&message, &proxied_logger),
                     MsgType::Flush => proxied_logger.flush(),
                     MsgType::Shutdown => break,
                 };
@@ -139,7 +138,7 @@ impl ThreadedProxyLogger {
     }
 
     /// Logs the passed log record with the registered proxied logger
-    fn log_record(message: RecordMsg, proxied_logger: &Box<dyn Log>) {
+    fn log_record(message: &RecordMsg, proxied_logger: &dyn Log) {
         let mut builder = Record::builder();
         proxied_logger.log(
             // this has to be done inline like this because otherwise format_args! will complain
@@ -193,9 +192,7 @@ impl Drop for ThreadedProxyLogger {
         self.send(MsgType::Shutdown);
         if let Some(join_handle) = self.join_handle.take() {
             if let Err(e) = join_handle.join() {
-                eprintln!(
-                    "An internal error occurred while shutting down ThreadedProxyLogger: {e:?}"
-                );
+                eprintln!("An internal error occurred while shutting down ThreadedProxyLogger: {e:?}");
             }
         }
         // Let's allow it to be None

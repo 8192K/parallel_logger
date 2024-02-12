@@ -2,16 +2,13 @@
 name = "threaded_proxy_logger"
 version = "0.5.0"
 edition = "2018"
-description = "A logger for proxying logs to a thread"
+description = "A logger implementing the log::Log trait that allows other loggers to run in a separate thread"
 repository = "https://github.com/8192K/threaded-proxy-logger"
 authors = ["Sebastian Frehmel <8192K@sebastianfrehmel.de>"]
 license = "MIT/Apache-2.0"
 categories = ["development-tools", "development-tools::debugging", "concurrency"]
 keywords = ["log", "logger", "logging", "realtime", "threaded"]
 readme = "README.md"
-
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 log = { version="0.4", features = ["std"] }
