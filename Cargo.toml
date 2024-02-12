@@ -1,7 +1,7 @@
 [package]
 name = "threaded_proxy_logger"
 version = "0.5.0"
-edition = "2015"
+edition = "2018"
 description = "A logger for proxying logs to a thread"
 repository = "https://github.com/8192K/threaded-proxy-logger"
 authors = ["Sebastian Frehmel <8192K@sebastianfrehmel.de>"]
@@ -15,6 +15,9 @@ readme = "README.md"
 
 [dependencies]
 log = { version="0.4", features = ["std"] }
+
+[dev-dependencies]
+simplelog = "0.12"
 
 [profile.release]
 lto = true

@@ -1,28 +1,29 @@
 //! # Threaded Proxy Logger
 //!
 //! This module provides a `ThreadedProxyLogger` struct that implements the `log::Log` trait.
-//! <p>The `ThreadedProxyLogger` forwards log messages to other loggers, but it does so in a separate thread.
-//! This can be useful in scenarios where logging can be a bottleneck, for example, when the logger writes to a slow output (like a file or a network), or when there are a lot of log messages.</p>
+//!
+//! The `ThreadedProxyLogger` forwards log messages to other loggers, but it does so in a separate thread.
+//! This can be useful in scenarios where logging can be a bottleneck, for example, when the logger writes to a slow output (like a file or a network), or when there are a lot of log messages.
+//!
 //! As an async framework might not yet be available when the logger is set up, async/await is not used.
 //!
 //! ## Usage
 //!
-//! First, create the actual loggers that you want to use:
-//!
-//! ```rust
-//! let proxied_logger = simplelog::TerminalLogger::new(...);
-//! ```
-//! or
-//! ```rust
-//! let proxied_logger = simplelog::CombinedLogger::new(... initialize your bundled loggers here...);
-//! ```
-//! etc.
-//!
-//! Then, initialize the `ThreadedProxyLogger` with the maximum log level and the proxied loggers:
+//! First, create the actual logger that you want to use, like for example `TermLogger` or `CombinedLogger` from the `simplelog` crate.<BR>
+//! Then, initialize the `ThreadedProxyLogger` with the maximum log level and the proxied logger:
 //!
 //! ```rust
 //! use log::LevelFilter;
-//! use ThreadedProxyLogger;
+//! use simplelog::TermLogger;
+//! use threaded_proxy_logger::ThreadedProxyLogger;
+//!
+//! let proxied_logger = TermLogger::new(
+//!     LevelFilter::Info,
+//!     simplelog::Config::default(),
+//!     simplelog::TerminalMode::Mixed,
+//!     simplelog::ColorChoice::Auto
+//! );
+//! // or alternatively combine multiple loggers with CombinedLogger or alike
 //!
 //! let result = ThreadedProxyLogger::init(LevelFilter::Info, proxied_logger);
 //! assert!(result.is_ok());
@@ -92,38 +93,26 @@ pub struct ThreadedProxyLogger {
 impl ThreadedProxyLogger {
     /// Initializes the `ThreadedProxyLogger`.
     ///
-    /// This function sets up a new `ThreadedProxyLogger` with the specified log level and proxied loggers.
+    /// This function sets up a new `ThreadedProxyLogger` with the specified log level and a proxied logger.
     /// It starts a new logging thread that listens for log messages on a channel.
     /// The `ThreadedProxyLogger` is then set as the logger for the `log` crate.
     ///
     /// # Arguments
     ///
     /// * `log_level` - The maximum log level that the logger will handle. Log messages with a level
-    ///   higher than this will be ignored. This will also apply to the proxied loggers even though they might have higher log levels set in their configs.
-    /// * `proxied_loggers` - The actual loggers that the `ThreadedProxyLogger` will forward log messages to.
+    ///   higher than this will be ignored. This will also apply to the proxied logger even though it might have a higher log level set in its config.
+    /// * `proxied_logger` - The actual logger that the `ThreadedProxyLogger` will forward log messages to. Use a logger like simplelog::CombinedLogger to log to multiple loggers.
     ///
     /// # Returns
     ///
     /// If successful, this function returns `Ok(())`. If another logger was already set for the `log` crate,
     /// this function returns `Err(SetLoggerError)`.
-    ///
-    //
-    /// # Examples
-    ///
-    /// ```rust
-    /// use log::LevelFilter;
-    /// use my_crate::ThreadedProxyLogger;
-    ///
-    /// let proxied_logger = Box::new(log::logger());
-    /// let result = ThreadedProxyLogger::init(LevelFilter::Info, proxied_logger);
-    /// assert!(result.is_ok());
-    /// ```
     pub fn init(
         log_level: LevelFilter,
-        proxied_loggers: Box<dyn Log>,
+        proxied_logger: Box<dyn Log>,
     ) -> Result<(), SetLoggerError> {
         let (tx, rx) = std::sync::mpsc::channel();
-        let join_handle = Self::start_thread(rx, proxied_loggers);
+        let join_handle = Self::start_thread(rx, proxied_logger);
 
         let tpl = Self {
             tx,
@@ -137,22 +126,22 @@ impl ThreadedProxyLogger {
     }
 
     /// Starts the thread that listens to incoming log events
-    fn start_thread(rx: Receiver<MsgType>, proxied_loggers: Box<dyn Log>) -> JoinHandle<()> {
+    fn start_thread(rx: Receiver<MsgType>, proxied_logger: Box<dyn Log>) -> JoinHandle<()> {
         thread::spawn(move || {
             while let Ok(message) = rx.recv() {
                 match message {
-                    MsgType::Data(message) => Self::log_record(message, &proxied_loggers),
-                    MsgType::Flush => proxied_loggers.flush(),
+                    MsgType::Data(message) => Self::log_record(message, &proxied_logger),
+                    MsgType::Flush => proxied_logger.flush(),
                     MsgType::Shutdown => break,
                 };
             }
         })
     }
 
-    /// Logs the passed log record with the registered proxied loggers
-    fn log_record(message: RecordMsg, proxied_loggers: &Box<dyn Log>) {
+    /// Logs the passed log record with the registered proxied logger
+    fn log_record(message: RecordMsg, proxied_logger: &Box<dyn Log>) {
         let mut builder = Record::builder();
-        proxied_loggers.log(
+        proxied_logger.log(
             // this has to be done inline like this because otherwise format_args! will complain
             &builder
                 .level(message.level)
@@ -192,7 +181,7 @@ impl Log for ThreadedProxyLogger {
     }
 
     fn flush(&self) {
-        // Flushing is forwarded to the actual loggers
+        // Flushing is forwarded to the actual logger
         self.send(MsgType::Flush);
     }
 }
