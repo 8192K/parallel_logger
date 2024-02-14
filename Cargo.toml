@@ -1,6 +1,6 @@
 [package]
 name = "threaded_proxy_logger"
-version = "0.5.0"
+version = "0.2.0"
 edition = "2018"
 description = "A logger implementing the log::Log trait that allows other loggers to run in a separate thread"
 repository = "https://github.com/8192K/threaded-proxy-logger"

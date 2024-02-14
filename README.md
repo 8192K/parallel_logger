@@ -15,7 +15,7 @@ Add the dependency to your `Cargo.toml`:
 ```toml
 [dependencies]
 log = "0.4"
-threaded_proxy_logger = "0.5"
+threaded_proxy_logger = "0.2"
 ```
 
 How to use in your application:

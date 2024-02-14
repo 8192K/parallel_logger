@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! First, create the actual loggers that you want to use, like for example `TermLogger`, `WriteLogger`
-//! or even `CombinedLogger` from the `simplelog` crate. Any log::Log implementation will work.<BR>
+//! or even `CombinedLogger` from the `simplelog` crate. Any `log::Log` implementation will work.<BR>
 //! Then, initialize the `ThreadedProxyLogger` with the maximum log level and the proxied loggers:
 //!
 //! ```rust
