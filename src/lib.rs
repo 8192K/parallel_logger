@@ -27,8 +27,7 @@
 //! );
 //! // create more loggers here if needed and add them to the vector below
 //!
-//! let result = ThreadedProxyLogger::init(LevelFilter::Info, vec![term_logger]);
-//! assert!(result.is_ok());
+//! ThreadedProxyLogger::init(LevelFilter::Info, vec![term_logger]);
 //! ```
 //!
 //! Now, you can use the `log` crate's macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) to log messages.
@@ -103,18 +102,12 @@ impl ThreadedProxyLogger {
     ///   have a higher log level set in their configs.
     /// * `proxied_loggers` - The actual loggers that the `ThreadedProxyLogger` will forward log messages to.
     ///
-    /// # Returns
+    /// # Panics
     ///
-    /// If successful, this function returns `Ok(())`. If another logger was already set for the `log` crate,
-    /// or if no proxied logger was provided, this function returns an error.
-    ///
-    /// # Errors
-    ///
-    /// See above
-    pub fn init(log_level: LevelFilter, proxied_loggers: Vec<Box<dyn Log>>) -> Result<(), Box<dyn std::error::Error>> {
-        if proxied_loggers.is_empty() {
-            return Err("Failed to initialize ThreadedProxyLogger: No proxied loggers provided".into());
-        }
+    /// If another logger was already set for the `log` crate,
+    /// or if no proxied logger was provided, this function panics.
+    pub fn init(log_level: LevelFilter, proxied_loggers: Vec<Box<dyn Log>>) {
+        assert!(!proxied_loggers.is_empty(), "Failed to initialize ThreadedProxyLogger: No proxied loggers provided");
 
         let (tx, rx) = std::sync::mpsc::channel();
         let join_handle = Self::start_thread(rx, proxied_loggers);
@@ -125,9 +118,8 @@ impl ThreadedProxyLogger {
             join_handle: Some(join_handle),
         };
 
-        log::set_boxed_logger(Box::new(tpl))?;
+        log::set_boxed_logger(Box::new(tpl)).unwrap();
         log::set_max_level(log_level);
-        Ok(())
     }
 
     /// Starts the thread that listens to incoming log events
@@ -172,6 +164,17 @@ impl ThreadedProxyLogger {
             eprintln!("An internal error occurred in ThreadedProxyLogger: {e}");
         }
     }
+
+    fn convert_msg(record: &Record) -> RecordMsg {
+        RecordMsg::new(
+            record.level(),
+            record.args().to_string(),
+            record.module_path().map(str::to_owned),
+            record.target().to_owned(),
+            record.file().map(str::to_owned),
+            record.line(),
+        )
+    }
 }
 
 impl Log for ThreadedProxyLogger {
@@ -181,16 +184,7 @@ impl Log for ThreadedProxyLogger {
 
     fn log(&self, record: &Record) {
         // Converts the log::Record struct into the custom struct
-        let message: RecordMsg = RecordMsg::new(
-            record.level(),
-            record.args().to_string(),
-            record.module_path().map(str::to_owned),
-            record.target().to_owned(),
-            record.file().map(str::to_owned),
-            record.line(),
-        );
-
-        self.send(MsgType::Data(message));
+        self.send(MsgType::Data(Self::convert_msg(record)));
     }
 
     fn flush(&self) {
@@ -210,5 +204,74 @@ impl Drop for ThreadedProxyLogger {
             }
         }
         // Let's allow it to be None
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use log::{LevelFilter, Log, Metadata, Record};
+    use std::{sync::mpsc::Sender, time::Duration};
+
+    use crate::RecordMsg;
+
+    struct ChannelLogger {
+        level: LevelFilter,
+        sender: Sender<RecordMsg>,
+    }
+
+    impl ChannelLogger {
+        pub fn new(level: LevelFilter, sender: Sender<RecordMsg>) -> Box<Self> {
+            Box::new(Self { level, sender })
+        }
+    }
+
+    impl Log for ChannelLogger {
+        fn enabled(&self, metadata: &Metadata) -> bool {
+            metadata.level() <= self.level
+        }
+
+        fn log(&self, record: &Record) {
+            if self.enabled(record.metadata()) {
+                let msg = ThreadedProxyLogger::convert_msg(record);
+                if self.sender.send(msg).is_err() {
+                    eprintln!("Failed to send message through channel");
+                }
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    #[test]
+    fn test_regular_log_message() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx2, rx2) = std::sync::mpsc::channel();
+
+        let logger = ChannelLogger::new(LevelFilter::Info, tx);
+        let logger2 = ChannelLogger::new(LevelFilter::Error, tx2);
+
+        // due to the log crate working acroos single unit tests, we can only call init once
+        ThreadedProxyLogger::init(LevelFilter::Info, vec![logger, logger2]);
+
+        log::info!("Test message");
+        let msg = rx.recv_timeout(Duration::from_secs(2));
+        assert!(msg.is_ok());
+        
+        let msg = msg.unwrap();
+        assert_eq!(msg.level, Level::Info);
+        assert_eq!(msg.args, "Test message");
+        assert_eq!(msg.module_path, Some("threaded_proxy_logger::test".into()));
+        assert_eq!(msg.target, "threaded_proxy_logger::test");
+        assert_eq!(msg.file, Some("src/lib.rs".to_owned()));
+        assert!(msg.line.is_some());
+
+        assert!(rx2.recv_timeout(Duration::from_secs(2)).is_err());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_threaded_proxy_logger_no_proxied_loggers() {
+        ThreadedProxyLogger::init(LevelFilter::Info, vec![]);
     }
 }
