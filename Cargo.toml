@@ -1,13 +1,13 @@
 [package]
-name = "threaded_proxy_logger"
+name = "parallel_logger"
 version = "0.2.0"
 edition = "2018"
-description = "A logger implementing the log::Log trait that allows other loggers to run in a separate thread"
-repository = "https://github.com/8192K/threaded_proxy_logger"
+description = "A logger implementing the log::Log trait that allows other loggers to run in a separate thread, reducing load on the calling thread significantly"
+repository = "https://github.com/8192K/parallel_logger"
 authors = ["Sebastian Frehmel <8192K@sebastianfrehmel.de>"]
 license = "MIT/Apache-2.0"
 categories = ["development-tools", "development-tools::debugging", "concurrency"]
-keywords = ["log", "logger", "logging", "realtime", "threaded"]
+keywords = ["log", "logger", "logging", "realtime", "parallel"]
 readme = "README.md"
 
 [dependencies]

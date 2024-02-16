@@ -1,10 +1,10 @@
-# threaded-proxy-logger
+# parallel_logger
 
-[![Crates.io](https://img.shields.io/crates/v/threaded-proxy-logger.svg)](https://crates.io/crates/threaded-proxy-logger)
-[![Docs](https://docs.rs/threaded-proxy-logger/badge.svg)](https://docs.rs/threaded-proxy-logger)
-[![MIT/APACHE-2.0](https://img.shields.io/crates/l/threaded-proxy-logger.svg)](https://crates.io/crates/threaded-proxy-logger)
+[![Crates.io](https://img.shields.io/crates/v/parallel_logger.svg)](https://crates.io/crates/parallel_logger)
+[![Docs](https://docs.rs/parallel_logger/badge.svg)](https://docs.rs/parallel_logger)
+[![MIT/APACHE-2.0](https://img.shields.io/crates/l/parallel_logger.svg)](https://crates.io/crates/parallel_logger)
 
-A simple logger that does not do logging by itself but passes all log events to an arbitrary number of passed loggers which run in a separate thread.
+A simple logger that does not do logging by itself but passes all log events to an arbitrary number of actual loggers which run in a separate thread.
 
 Very useful when logging is a bottleneck such as in realtime scenarios or when logging to a network or database etc.
 
@@ -15,22 +15,20 @@ Add the dependency to your `Cargo.toml`:
 ```toml
 [dependencies]
 log = "0.4"
-threaded_proxy_logger = "0.2"
+parallel_logger = "0.2"
 ```
 
 How to use in your application:
 
 ```rust
-use threaded_proxy_logger::ThreadedProxyLogger;
+use parallel_logger::ParallelLogger;
 
 fn main() {
-    ThreadedProxyLogger::init(log::LevelFilter::Info, any_logger_that_implements_the_Log_trait>);
+    ParallelLogger::init(log::LevelFilter::Info, vec![any_logger_1, any_logger_2, ...]>);
 }
 ```
-To pass multiple loggers, use a bundling logger like `simplelog::CombinedLogger` for example.
-
-Make sure not to pass other loggers by using their respective `init` methods, but to use their `new` methods instead.
-Do not register any other logger with the log crate before as the ThreadedProxyLogger will take that place.
+Make sure not to create other loggers by using their respective `init` methods, but to use their `new` methods instead.
+Do not register any other logger with the log crate before as the ParallelLogger will take that place.
 
 ## License
 

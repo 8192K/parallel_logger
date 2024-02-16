@@ -1,10 +1,10 @@
-//! # Threaded Proxy Logger
+//! # Parallel Logger
 //!
-//! This module provides a `ThreadedProxyLogger` struct that implements the `log::Log` trait.
+//! This module provides a `ParallelLogger` struct that implements the `log::Log` trait.
 //!
-//! The `ThreadedProxyLogger` forwards log messages to other loggers, but it does so in a separate thread.
+//! The `ParallelLogger` forwards log messages to other loggers, but it does so in a separate thread.
 //! This can be useful in scenarios where logging can be a bottleneck, for example, when the logger writes
-//! to a slow output (like a file or a network), or when there are a lot of log messages.
+//! to a slow output (like a file or a network), or when there are a lot of log messages or in a realtime scenario.
 //!
 //! As an async framework might not yet be available when the logger is set up, async/await is not used.
 //!
@@ -12,12 +12,12 @@
 //!
 //! First, create the actual loggers that you want to use, like for example `TermLogger`, `WriteLogger`
 //! or even `CombinedLogger` from the `simplelog` crate. Any `log::Log` implementation will work.<BR>
-//! Then, initialize the `ThreadedProxyLogger` with the maximum log level and the proxied loggers:
+//! Then, initialize the `ParallelLogger` with the maximum log level and the actual loggers:
 //!
 //! ```rust
 //! use log::LevelFilter;
 //! use simplelog::TermLogger;
-//! use threaded_proxy_logger::ThreadedProxyLogger;
+//! use parallel_logger::ParallelLogger;
 //!
 //! let term_logger = TermLogger::new(
 //!     LevelFilter::Info,
@@ -27,11 +27,11 @@
 //! );
 //! // create more loggers here if needed and add them to the vector below
 //!
-//! ThreadedProxyLogger::init(LevelFilter::Info, vec![term_logger]);
+//! ParallelLogger::init(LevelFilter::Info, vec![term_logger]);
 //! ```
 //!
 //! Now, you can use the `log` crate's macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) to log messages.
-//! The `ThreadedProxyLogger` will forward these messages to the proxied loggers in a separate thread.
+//! The `ParallelLogger` will forward these messages to the actual loggers in a separate thread.
 //!
 
 use std::{
@@ -81,36 +81,36 @@ enum MsgType {
 }
 
 /// A `log::Log` implementation that executes all logging on a separate thread.<p>
-/// Simply pass the actual loggers in the call to `ThreadedProxyLogger::init`.</p>
-pub struct ThreadedProxyLogger {
+/// Simply pass the actual loggers in the call to `ParallelLogger::init`.</p>
+pub struct ParallelLogger {
     tx: Sender<MsgType>,
     log_level: LevelFilter,
     join_handle: Option<JoinHandle<()>>,
 }
 
-impl ThreadedProxyLogger {
-    /// Initializes the `ThreadedProxyLogger`.
+impl ParallelLogger {
+    /// Initializes the `ParallelLogger`.
     ///
-    /// This function sets up a new `ThreadedProxyLogger` with the specified log level and the proxied loggers.
+    /// This function sets up a new `ParallelLogger` with the specified log level and the actual loggers.
     /// It starts a new logging thread that listens for log messages on a channel.
-    /// The `ThreadedProxyLogger` is then set as the global logger for the `log` crate.
+    /// The `ParallelLogger` is then set as the global logger for the `log` crate.
     ///
     /// # Arguments
     ///
     /// * `log_level` - The maximum log level that the logger will handle. Log messages with a level
-    ///   higher than this will be ignored. This will also apply to the proxied loggers even though those might
+    ///   higher than this will be ignored. This will also apply to the actual loggers even though those might
     ///   have a higher log level set in their configs.
-    /// * `proxied_loggers` - The actual loggers that the `ThreadedProxyLogger` will forward log messages to.
+    /// * `actual_loggers` - The actual loggers that the `ParallelLogger` will forward log messages to.
     ///
     /// # Panics
     ///
     /// If another logger was already set for the `log` crate,
-    /// or if no proxied logger was provided, this function panics.
-    pub fn init(log_level: LevelFilter, proxied_loggers: Vec<Box<dyn Log>>) {
-        assert!(!proxied_loggers.is_empty(), "Failed to initialize ThreadedProxyLogger: No proxied loggers provided");
+    /// or if no actual logger was provided, this function panics.
+    pub fn init(log_level: LevelFilter, actual_loggers: Vec<Box<dyn Log>>) {
+        assert!(!actual_loggers.is_empty(), "Failed to initialize ParallelLogger: No actual loggers provided");
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let join_handle = Self::start_thread(rx, proxied_loggers);
+        let join_handle = Self::start_thread(rx, actual_loggers);
 
         let tpl = Self {
             tx,
@@ -123,18 +123,18 @@ impl ThreadedProxyLogger {
     }
 
     /// Starts the thread that listens to incoming log events
-    fn start_thread(rx: Receiver<MsgType>, proxied_loggers: Vec<Box<dyn Log>>) -> JoinHandle<()> {
+    fn start_thread(rx: Receiver<MsgType>, actual_loggers: Vec<Box<dyn Log>>) -> JoinHandle<()> {
         thread::spawn(move || {
             while let Ok(message) = rx.recv() {
                 match message {
                     MsgType::Data(message) => {
-                        for proxied_logger in &proxied_loggers {
-                            Self::log_record(&message, proxied_logger);
+                        for actual_logger in &actual_loggers {
+                            Self::log_record(&message, actual_logger);
                         }
                     }
                     MsgType::Flush => {
-                        for proxied_logger in &proxied_loggers {
-                            proxied_logger.flush();
+                        for actual_logger in &actual_loggers {
+                            actual_logger.flush();
                         }
                     }
                     MsgType::Shutdown => break,
@@ -143,10 +143,10 @@ impl ThreadedProxyLogger {
         })
     }
 
-    /// Logs the passed log record with the registered proxied loggers
-    fn log_record(message: &RecordMsg, proxied_logger: &dyn Log) {
+    /// Logs the passed log record with the registered actual loggers
+    fn log_record(message: &RecordMsg, actual_logger: &dyn Log) {
         let mut builder = Record::builder();
-        proxied_logger.log(
+        actual_logger.log(
             // this has to be done inline like this because otherwise format_args! will complain
             &builder
                 .level(message.level)
@@ -161,7 +161,7 @@ impl ThreadedProxyLogger {
 
     fn send(&self, msg: MsgType) {
         if let Err(e) = self.tx.send(msg) {
-            eprintln!("An internal error occurred in ThreadedProxyLogger: {e}");
+            eprintln!("An internal error occurred in ParallelLogger: {e}");
         }
     }
 
@@ -177,7 +177,7 @@ impl ThreadedProxyLogger {
     }
 }
 
-impl Log for ThreadedProxyLogger {
+impl Log for ParallelLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.log_level
     }
@@ -193,14 +193,14 @@ impl Log for ThreadedProxyLogger {
     }
 }
 
-impl Drop for ThreadedProxyLogger {
+impl Drop for ParallelLogger {
     /// Sends a shutdown signal to the started thread and waits for the thread
     /// to finish processing all log messages still in the queue.
     fn drop(&mut self) {
         self.send(MsgType::Shutdown);
         if let Some(join_handle) = self.join_handle.take() {
             if let Err(e) = join_handle.join() {
-                eprintln!("An internal error occurred while shutting down ThreadedProxyLogger: {e:?}");
+                eprintln!("An internal error occurred while shutting down ParallelLogger: {e:?}");
             }
         }
         // Let's allow it to be None
@@ -233,7 +233,7 @@ mod test {
 
         fn log(&self, record: &Record) {
             if self.enabled(record.metadata()) {
-                let msg = ThreadedProxyLogger::convert_msg(record);
+                let msg = ParallelLogger::convert_msg(record);
                 if self.sender.send(msg).is_err() {
                     eprintln!("Failed to send message through channel");
                 }
@@ -251,18 +251,18 @@ mod test {
         let logger = ChannelLogger::new(LevelFilter::Info, tx);
         let logger2 = ChannelLogger::new(LevelFilter::Error, tx2);
 
-        // due to the log crate working acroos single unit tests, we can only call init once
-        ThreadedProxyLogger::init(LevelFilter::Info, vec![logger, logger2]);
+        // due to the log crate working across single unit tests, we can only call init once...
+        ParallelLogger::init(LevelFilter::Info, vec![logger, logger2]);
 
         log::info!("Test message");
         let msg = rx.recv_timeout(Duration::from_secs(2));
         assert!(msg.is_ok());
-        
+
         let msg = msg.unwrap();
         assert_eq!(msg.level, Level::Info);
         assert_eq!(msg.args, "Test message");
-        assert_eq!(msg.module_path, Some("threaded_proxy_logger::test".into()));
-        assert_eq!(msg.target, "threaded_proxy_logger::test");
+        assert_eq!(msg.module_path, Some("parallel_logger::test".into()));
+        assert_eq!(msg.target, "parallel_logger::test");
         assert_eq!(msg.file, Some("src/lib.rs".to_owned()));
         assert!(msg.line.is_some());
 
@@ -271,7 +271,7 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn test_threaded_proxy_logger_no_proxied_loggers() {
-        ThreadedProxyLogger::init(LevelFilter::Info, vec![]);
+    fn test_parallel_logger_no_actual_loggers() {
+        ParallelLogger::init(LevelFilter::Info, vec![]);
     }
 }
