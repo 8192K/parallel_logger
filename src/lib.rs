@@ -80,6 +80,7 @@ enum MsgType {
     Shutdown,
 }
 
+#[derive(Debug)]
 /// A `log::Log` implementation that executes all logging on a separate thread.<p>
 /// Simply pass the actual loggers in the call to `ParallelLogger::init`.</p>
 pub struct ParallelLogger {
@@ -182,11 +183,13 @@ impl Log for ParallelLogger {
         metadata.level() <= self.log_level
     }
 
+    /// Forwards the log call to the actual loggers
     fn log(&self, record: &Record) {
         // Converts the log::Record struct into the custom struct
         self.send(MsgType::Data(Self::convert_msg(record)));
     }
 
+    /// Forwards the flush call to the actual loggers
     fn flush(&self) {
         // Flushing is forwarded to the actual loggers
         self.send(MsgType::Flush);
