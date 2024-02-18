@@ -17,7 +17,7 @@
 //! ```rust
 //! use log::LevelFilter;
 //! use simplelog::TermLogger;
-//! use parallel_logger::ParallelLogger;
+//! use parallel_logger::{ ParallelLogger, ParallelMode };
 //!
 //! let term_logger = TermLogger::new(
 //!     LevelFilter::Info,
@@ -27,17 +27,16 @@
 //! );
 //! // create more loggers here if needed and add them to the vector below
 //!
-//! ParallelLogger::init(LevelFilter::Info, vec![term_logger]);
+//! ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![term_logger]);
 //! ```
 //!
 //! Now, you can use the `log` crate's macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) to log messages.
 //! The `ParallelLogger` will forward these messages to the actual loggers in a separate thread.
 //!
 
-use std::{
-    sync::mpsc::{Receiver, Sender},
-    thread::{self, JoinHandle},
-};
+use std::thread::{self, JoinHandle};
+
+use flume::{self, Receiver, Sender};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -80,13 +79,22 @@ enum MsgType {
     Shutdown,
 }
 
+/// The mode in which the logger will process the actual loggers
+#[derive(Debug, Copy, Clone)]
+pub enum ParallelMode {
+    /// The logger will use a single thread to process all actual loggers in sequence
+    Sequence,
+    /// The logger will use a separate thread for each logger
+    Parallel,
+}
+
 #[derive(Debug)]
 /// A `log::Log` implementation that executes all logging on a separate thread.<p>
 /// Simply pass the actual loggers in the call to `ParallelLogger::init`.</p>
 pub struct ParallelLogger {
     tx: Sender<MsgType>,
     log_level: LevelFilter,
-    join_handle: Option<JoinHandle<()>>,
+    join_handles: Option<Vec<JoinHandle<()>>>,
 }
 
 impl ParallelLogger {
@@ -107,20 +115,51 @@ impl ParallelLogger {
     ///
     /// If another logger was already set for the `log` crate,
     /// or if no actual logger was provided, this function panics.
-    pub fn init(log_level: LevelFilter, actual_loggers: Vec<Box<dyn Log>>) {
-        assert!(!actual_loggers.is_empty(), "Failed to initialize ParallelLogger: No actual loggers provided");
+    pub fn init(log_level: LevelFilter, mode: ParallelMode, actual_loggers: Vec<Box<dyn Log>>) {
+        assert!(
+            !actual_loggers.is_empty(),
+            "Failed to initialize ParallelLogger: No actual loggers provided"
+        );
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let join_handle = Self::start_thread(rx, actual_loggers);
-
-        let tpl = Self {
-            tx,
-            log_level,
-            join_handle: Some(join_handle),
+        let tpl = match mode {
+            ParallelMode::Sequence => {
+                let (tx, rx) = flume::unbounded();
+                let join_handle = Self::start_thread(rx, actual_loggers);
+                Self {
+                    tx,
+                    log_level,
+                    join_handles: Some(vec![join_handle]),
+                }
+            }
+            ParallelMode::Parallel => {
+                let mut join_handles = Vec::with_capacity(actual_loggers.len());
+                let (tx, rx) = flume::unbounded();
+                for logger in actual_loggers {
+                    let join_handle = Self::start_thread_single(rx.clone(), logger);
+                    join_handles.push(join_handle);
+                }
+                Self {
+                    tx,
+                    log_level,
+                    join_handles: Some(join_handles),
+                }
+            }
         };
 
         log::set_boxed_logger(Box::new(tpl)).unwrap();
         log::set_max_level(log_level);
+    }
+
+    fn start_thread_single(rx: Receiver<MsgType>, actual_logger: Box<dyn Log>) -> JoinHandle<()> {
+        thread::spawn(move || {
+            while let Ok(message) = rx.recv() {
+                match message {
+                    MsgType::Data(message) => Self::log_record(&message, &actual_logger),
+                    MsgType::Flush => actual_logger.flush(),
+                    MsgType::Shutdown => break,
+                };
+            }
+        })
     }
 
     /// Starts the thread that listens to incoming log events
@@ -201,9 +240,11 @@ impl Drop for ParallelLogger {
     /// to finish processing all log messages still in the queue.
     fn drop(&mut self) {
         self.send(MsgType::Shutdown);
-        if let Some(join_handle) = self.join_handle.take() {
-            if let Err(e) = join_handle.join() {
-                eprintln!("An internal error occurred while shutting down ParallelLogger: {e:?}");
+        if let Some(join_handles) = self.join_handles.take() {
+            for join_handle in join_handles {
+                if let Err(e) = join_handle.join() {
+                    eprintln!("An internal error occurred while shutting down ParallelLogger: {e:?}");
+                }
             }
         }
         // Let's allow it to be None
@@ -255,7 +296,7 @@ mod test {
         let logger2 = ChannelLogger::new(LevelFilter::Error, tx2);
 
         // due to the log crate working across single unit tests, we can only call init once...
-        ParallelLogger::init(LevelFilter::Info, vec![logger, logger2]);
+        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![logger, logger2]);
 
         log::info!("Test message");
         let msg = rx.recv_timeout(Duration::from_secs(2));
@@ -275,6 +316,6 @@ mod test {
     #[test]
     #[should_panic]
     fn test_parallel_logger_no_actual_loggers() {
-        ParallelLogger::init(LevelFilter::Info, vec![]);
+        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![]);
     }
 }

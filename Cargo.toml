@@ -1,6 +1,6 @@
 [package]
 name = "parallel_logger"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2018"
 description = "A logger implementing the log::Log trait that allows other loggers to run in a separate thread, reducing load on the calling thread significantly"
 repository = "https://github.com/8192K/parallel_logger"
@@ -12,6 +12,7 @@ readme = "README.md"
 
 [dependencies]
 log = { version="0.4", features = ["std"] }
+flume = "0.11"
 
 [dev-dependencies]
 simplelog = "0.12"
