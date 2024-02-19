@@ -12,7 +12,7 @@
 //!
 //! First, create the actual loggers that you want to use, like for example `TermLogger`, `WriteLogger`
 //! or even `CombinedLogger` from the `simplelog` crate. Any `log::Log` implementation will work.<BR>
-//! Then, initialize the `ParallelLogger` with the maximum log level and the actual loggers:
+//! Then, initialize the `ParallelLogger` with the maximum log level, the parallel execution mode, and the actual loggers:
 //!
 //! ```rust
 //! use log::LevelFilter;
@@ -29,9 +29,12 @@
 //!
 //! ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![term_logger]);
 //! ```
+//! `ParallelMode::Sequential` will execute all actual loggers in sequence on a separate thread,
+//! while `ParallelMode::Parallel` will execute each actual logger in its own thread.
+//! Unless there is really high contention on the loggers, `ParallelMode::Sequental` will be sufficient for most use cases.
 //!
 //! Now, you can use the `log` crate's macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) to log messages.
-//! The `ParallelLogger` will forward these messages to the actual loggers in a separate thread.
+//! The `ParallelLogger` will forward these messages to the actual loggers as configured .
 //!
 
 use std::thread::{self, JoinHandle};
@@ -52,12 +55,12 @@ enum MsgType {
 pub enum ParallelMode {
     /// The logger will use a single thread to process all actual loggers in sequence
     Sequential,
-    /// The logger will use a separate thread for each logger
+    /// The logger will use a separate thread for each actual logger
     Parallel,
 }
 
 #[derive(Debug)]
-/// A `log::Log` implementation that executes all logging on a separate thread.<p>
+/// A `log::Log` implementation that executes all logging in parallel.<p>
 /// Simply pass the actual loggers in the call to `ParallelLogger::init`.</p>
 pub struct ParallelLogger {
     tx: Sender<MsgType>,
@@ -68,8 +71,8 @@ pub struct ParallelLogger {
 impl ParallelLogger {
     /// Initializes the `ParallelLogger`.
     ///
-    /// This function sets up a new `ParallelLogger` with the specified log level and the actual loggers.
-    /// It starts a new logging thread that listens for log messages on a channel.
+    /// This function sets up a new `ParallelLogger` with the specified log level, the parallel execution mode and the actual loggers.
+    /// Depending on the `ParallelMode` setting, either one or more threads will be created to process the actual loggers.
     /// The `ParallelLogger` is then set as the global logger for the `log` crate.
     ///
     /// # Arguments
@@ -77,6 +80,7 @@ impl ParallelLogger {
     /// * `log_level` - The maximum log level that the logger will handle. Log messages with a level
     ///   higher than this will be ignored. This will also apply to the actual loggers even though those might
     ///   have a higher log level set in their configs.
+    /// * `mode` - The parallel execution mode that the `ParallelLogger` will use.
     /// * `actual_loggers` - The actual loggers that the `ParallelLogger` will forward log messages to.
     ///
     /// # Panics
