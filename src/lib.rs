@@ -27,7 +27,7 @@
 //! );
 //! // create more loggers here if needed and add them to the vector below
 //!
-//! ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![term_logger]);
+//! ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![term_logger]);
 //! ```
 //!
 //! Now, you can use the `log` crate's macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) to log messages.
@@ -37,44 +37,12 @@
 use std::thread::{self, JoinHandle};
 
 use flume::{self, Receiver, Sender};
-
-use log::{Level, LevelFilter, Log, Metadata, Record};
-
-/// A custom representation of the `log::Record` struct which is unfortunately
-/// not directly serializable (mostly due to the use of `Arguments`).
-/// Used to send data through the channel.
-struct RecordMsg {
-    level: Level,
-    args: String,
-    module_path: Option<String>,
-    target: String,
-    file: Option<String>,
-    line: Option<u32>,
-}
-
-impl RecordMsg {
-    const fn new(
-        level: Level,
-        args: String,
-        module_path: Option<String>,
-        target: String,
-        file: Option<String>,
-        line: Option<u32>,
-    ) -> Self {
-        Self {
-            level,
-            args,
-            module_path,
-            target,
-            file,
-            line,
-        }
-    }
-}
+use log::{LevelFilter, Log, Metadata, Record};
+use serializable_log_record::{into_log_record, SerializableLogRecord};
 
 /// The types of message that can be sent through the channel
 enum MsgType {
-    Data(RecordMsg),
+    Data(SerializableLogRecord),
     Flush,
     Shutdown,
 }
@@ -83,7 +51,7 @@ enum MsgType {
 #[derive(Debug, Copy, Clone)]
 pub enum ParallelMode {
     /// The logger will use a single thread to process all actual loggers in sequence
-    Sequence,
+    Sequential,
     /// The logger will use a separate thread for each logger
     Parallel,
 }
@@ -121,9 +89,9 @@ impl ParallelLogger {
             "Failed to initialize ParallelLogger: No actual loggers provided"
         );
 
+        let (tx, rx) = flume::unbounded();
         let tpl = match mode {
-            ParallelMode::Sequence => {
-                let (tx, rx) = flume::unbounded();
+            ParallelMode::Sequential => {
                 let join_handle = Self::start_thread(rx, actual_loggers);
                 Self {
                     tx,
@@ -133,7 +101,6 @@ impl ParallelLogger {
             }
             ParallelMode::Parallel => {
                 let mut join_handles = Vec::with_capacity(actual_loggers.len());
-                let (tx, rx) = flume::unbounded();
                 for logger in actual_loggers {
                     let join_handle = Self::start_thread_single(rx.clone(), logger);
                     join_handles.push(join_handle);
@@ -184,36 +151,16 @@ impl ParallelLogger {
     }
 
     /// Logs the passed log record with the registered actual loggers
-    fn log_record(message: &RecordMsg, actual_logger: &dyn Log) {
+    fn log_record(message: &SerializableLogRecord, actual_logger: &dyn Log) {
         let mut builder = Record::builder();
-        actual_logger.log(
-            // this has to be done inline like this because otherwise format_args! will complain
-            &builder
-                .level(message.level)
-                .args(format_args!("{}", message.args))
-                .module_path(message.module_path.as_deref())
-                .target(message.target.as_str())
-                .file(message.file.as_deref())
-                .line(message.line)
-                .build(),
-        );
+        // this has to be done inline like this because otherwise format_args! will complain
+        actual_logger.log(&into_log_record!(builder, message));
     }
 
     fn send(&self, msg: MsgType) {
         if let Err(e) = self.tx.send(msg) {
             eprintln!("An internal error occurred in ParallelLogger: {e}");
         }
-    }
-
-    fn convert_msg(record: &Record) -> RecordMsg {
-        RecordMsg::new(
-            record.level(),
-            record.args().to_string(),
-            record.module_path().map(str::to_owned),
-            record.target().to_owned(),
-            record.file().map(str::to_owned),
-            record.line(),
-        )
     }
 }
 
@@ -225,7 +172,7 @@ impl Log for ParallelLogger {
     /// Forwards the log call to the actual loggers
     fn log(&self, record: &Record) {
         // Converts the log::Record struct into the custom struct
-        self.send(MsgType::Data(Self::convert_msg(record)));
+        self.send(MsgType::Data(SerializableLogRecord::from(record)));
     }
 
     /// Forwards the flush call to the actual loggers
@@ -257,15 +204,13 @@ mod test {
     use log::{LevelFilter, Log, Metadata, Record};
     use std::{sync::mpsc::Sender, time::Duration};
 
-    use crate::RecordMsg;
-
     struct ChannelLogger {
         level: LevelFilter,
-        sender: Sender<RecordMsg>,
+        sender: Sender<SerializableLogRecord>,
     }
 
     impl ChannelLogger {
-        pub fn new(level: LevelFilter, sender: Sender<RecordMsg>) -> Box<Self> {
+        pub fn new(level: LevelFilter, sender: Sender<SerializableLogRecord>) -> Box<Self> {
             Box::new(Self { level, sender })
         }
     }
@@ -277,7 +222,7 @@ mod test {
 
         fn log(&self, record: &Record) {
             if self.enabled(record.metadata()) {
-                let msg = ParallelLogger::convert_msg(record);
+                let msg = SerializableLogRecord::from(record);
                 if self.sender.send(msg).is_err() {
                     eprintln!("Failed to send message through channel");
                 }
@@ -291,31 +236,44 @@ mod test {
     fn test_regular_log_message() {
         let (tx, rx) = std::sync::mpsc::channel();
         let (tx2, rx2) = std::sync::mpsc::channel();
+        let (tx3, rx3) = std::sync::mpsc::channel();
 
         let logger = ChannelLogger::new(LevelFilter::Info, tx);
-        let logger2 = ChannelLogger::new(LevelFilter::Error, tx2);
+        let logger2 = ChannelLogger::new(LevelFilter::Info, tx2);
+        let logger3 = ChannelLogger::new(LevelFilter::Error, tx3);
 
         // due to the log crate working across single unit tests, we can only call init once...
-        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![logger, logger2]);
+        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![logger, logger2, logger3]);
 
         log::info!("Test message");
         let msg = rx.recv_timeout(Duration::from_secs(2));
         assert!(msg.is_ok());
 
         let msg = msg.unwrap();
-        assert_eq!(msg.level, Level::Info);
+        assert_eq!(msg.level, "INFO");
         assert_eq!(msg.args, "Test message");
         assert_eq!(msg.module_path, Some("parallel_logger::test".into()));
         assert_eq!(msg.target, "parallel_logger::test");
         assert_eq!(msg.file, Some("src/lib.rs".to_owned()));
         assert!(msg.line.is_some());
 
-        assert!(rx2.recv_timeout(Duration::from_secs(2)).is_err());
+        let msg = rx2.recv_timeout(Duration::from_secs(2));
+        assert!(msg.is_ok());
+
+        let msg = msg.unwrap();
+        assert_eq!(msg.level, "INFO");
+        assert_eq!(msg.args, "Test message");
+        assert_eq!(msg.module_path, Some("parallel_logger::test".into()));
+        assert_eq!(msg.target, "parallel_logger::test");
+        assert_eq!(msg.file, Some("src/lib.rs".to_owned()));
+        assert!(msg.line.is_some());
+
+        assert!(rx3.recv_timeout(Duration::from_secs(2)).is_err());
     }
 
     #[test]
     #[should_panic]
     fn test_parallel_logger_no_actual_loggers() {
-        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequence, vec![]);
+        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![]);
     }
 }

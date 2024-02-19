@@ -13,6 +13,7 @@ readme = "README.md"
 [dependencies]
 log = { version="0.4", features = ["std"] }
 flume = "0.11"
+serializable_log_record = { version = "0.3" }
 
 [dev-dependencies]
 simplelog = "0.12"
