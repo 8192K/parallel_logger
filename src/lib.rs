@@ -60,8 +60,8 @@ pub enum ParallelMode {
 }
 
 #[derive(Debug)]
-/// A `log::Log` implementation that executes all logging in parallel.<p>
-/// Simply pass the actual loggers in the call to `ParallelLogger::init`.</p>
+/// A `log::Log` implementation that executes all logging in parallel.<BR>
+/// Simply pass the actual loggers in the call to `ParallelLogger::init`.
 pub struct ParallelLogger {
     tx: Sender<MsgType>,
     log_level: LevelFilter,
@@ -85,8 +85,9 @@ impl ParallelLogger {
     ///
     /// # Panics
     ///
-    /// If another logger was already set for the `log` crate,
-    /// or if no actual logger was provided, this function panics.
+    /// - if another logger was already set for the `log` crate
+    /// - if no actual logger was provided
+    /// - if a thread could not be created
     pub fn init(log_level: LevelFilter, mode: ParallelMode, actual_loggers: Vec<Box<dyn Log>>) {
         assert!(
             !actual_loggers.is_empty(),
@@ -104,10 +105,12 @@ impl ParallelLogger {
                 }
             }
             ParallelMode::Parallel => {
+                let mut counter = 0;
                 let mut join_handles = Vec::with_capacity(actual_loggers.len());
                 for logger in actual_loggers {
-                    let join_handle = Self::start_thread_single(rx.clone(), logger);
+                    let join_handle = Self::start_thread_single(rx.clone(), logger, counter);
                     join_handles.push(join_handle);
+                    counter += 1;
                 }
                 Self {
                     tx,
@@ -121,37 +124,43 @@ impl ParallelLogger {
         log::set_max_level(log_level);
     }
 
-    fn start_thread_single(rx: Receiver<MsgType>, actual_logger: Box<dyn Log>) -> JoinHandle<()> {
-        thread::spawn(move || {
-            while let Ok(message) = rx.recv() {
-                match message {
-                    MsgType::Data(message) => Self::log_record(&message, &actual_logger),
-                    MsgType::Flush => actual_logger.flush(),
-                    MsgType::Shutdown => break,
-                };
-            }
-        })
+    fn start_thread_single(rx: Receiver<MsgType>, actual_logger: Box<dyn Log>, counter: i32) -> JoinHandle<()> {
+        thread::Builder::new()
+            .name(format!("ParallelLogger-Thread-{counter}"))
+            .spawn(move || {
+                while let Ok(message) = rx.recv() {
+                    match message {
+                        MsgType::Data(message) => Self::log_record(&message, &*actual_logger),
+                        MsgType::Flush => actual_logger.flush(),
+                        MsgType::Shutdown => break,
+                    };
+                }
+            })
+            .unwrap()
     }
 
     /// Starts the thread that listens to incoming log events
     fn start_thread(rx: Receiver<MsgType>, actual_loggers: Vec<Box<dyn Log>>) -> JoinHandle<()> {
-        thread::spawn(move || {
-            while let Ok(message) = rx.recv() {
-                match message {
-                    MsgType::Data(message) => {
-                        for actual_logger in &actual_loggers {
-                            Self::log_record(&message, actual_logger);
+        thread::Builder::new()
+            .name("ParallelLogger-Thread-0".to_owned())
+            .spawn(move || {
+                while let Ok(message) = rx.recv() {
+                    match message {
+                        MsgType::Data(message) => {
+                            for actual_logger in &actual_loggers {
+                                Self::log_record(&message, actual_logger);
+                            }
                         }
-                    }
-                    MsgType::Flush => {
-                        for actual_logger in &actual_loggers {
-                            actual_logger.flush();
+                        MsgType::Flush => {
+                            for actual_logger in &actual_loggers {
+                                actual_logger.flush();
+                            }
                         }
-                    }
-                    MsgType::Shutdown => break,
-                };
-            }
-        })
+                        MsgType::Shutdown => break,
+                    };
+                }
+            })
+            .unwrap()
     }
 
     /// Logs the passed log record with the registered actual loggers
