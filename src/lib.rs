@@ -65,7 +65,31 @@ pub enum ParallelMode {
 pub struct ParallelLogger {
     tx: Sender<MsgType>,
     log_level: LevelFilter,
-    join_handles: Option<Vec<JoinHandle<()>>>,
+}
+
+/// A handle that can be used to shut down the `ParallelLogger`
+pub struct ShutdownHandle {
+    tx: Sender<MsgType>,
+    join_handles: Vec<JoinHandle<()>>,
+}
+
+impl ShutdownHandle {
+    /// Shuts down the `ParallelLogger` and waits for all threads to finish.
+    pub fn shutdown(self) -> i32 {
+        if let Err(e) = self.tx.send(MsgType::Shutdown) {
+            eprintln!("An internal error occurred in ParallelLogger: {e}");
+            return 0;
+        }
+        let mut successful_joins = 0;
+        for join_handle in self.join_handles {
+            if let Err(e) = join_handle.join() {
+                eprintln!("An internal error occurred while shutting down ParallelLogger: {e:?}");
+            } else {
+                successful_joins += 1;
+            }
+        }
+        successful_joins
+    }
 }
 
 impl ParallelLogger {
@@ -83,45 +107,49 @@ impl ParallelLogger {
     /// * `mode` - The parallel execution mode that the `ParallelLogger` will use.
     /// * `actual_loggers` - The actual loggers that the `ParallelLogger` will forward log messages to.
     ///
+    /// # Returns
+    ///
+    /// A `ShutdownHandle` that can be used to shut down the `ParallelLogger` and possibly flush the remaining messages in the queue.
+    ///
     /// # Panics
     ///
     /// - if another logger was already set for the `log` crate
     /// - if no actual logger was provided
     /// - if a thread could not be created
-    pub fn init(log_level: LevelFilter, mode: ParallelMode, actual_loggers: Vec<Box<dyn Log>>) {
+    pub fn init(log_level: LevelFilter, mode: ParallelMode, actual_loggers: Vec<Box<dyn Log>>) -> ShutdownHandle {
         assert!(
             !actual_loggers.is_empty(),
             "Failed to initialize ParallelLogger: No actual loggers provided"
         );
 
         let (tx, rx) = flume::unbounded();
-        let tpl = match mode {
+
+        let mut join_handles = Vec::with_capacity(actual_loggers.len());
+        match mode {
             ParallelMode::Sequential => {
                 let join_handle = Self::start_thread(rx, actual_loggers);
-                Self {
-                    tx,
-                    log_level,
-                    join_handles: Some(vec![join_handle]),
-                }
+                join_handles.push(join_handle);
             }
             ParallelMode::Parallel => {
                 let mut counter = 0;
-                let mut join_handles = Vec::with_capacity(actual_loggers.len());
+
                 for logger in actual_loggers {
                     let join_handle = Self::start_thread_single(rx.clone(), logger, counter);
                     join_handles.push(join_handle);
                     counter += 1;
                 }
-                Self {
-                    tx,
-                    log_level,
-                    join_handles: Some(join_handles),
-                }
             }
+        };
+
+        let tpl = Self {
+            tx: tx.clone(),
+            log_level,
         };
 
         log::set_boxed_logger(Box::new(tpl)).unwrap();
         log::set_max_level(log_level);
+
+        ShutdownHandle { tx, join_handles }
     }
 
     fn start_thread_single(rx: Receiver<MsgType>, actual_logger: Box<dyn Log>, counter: i32) -> JoinHandle<()> {
@@ -195,22 +223,6 @@ impl Log for ParallelLogger {
     }
 }
 
-impl Drop for ParallelLogger {
-    /// Sends a shutdown signal to the started thread and waits for the thread
-    /// to finish processing all log messages still in the queue.
-    fn drop(&mut self) {
-        self.send(MsgType::Shutdown);
-        if let Some(join_handles) = self.join_handles.take() {
-            for join_handle in join_handles {
-                if let Err(e) = join_handle.join() {
-                    eprintln!("An internal error occurred while shutting down ParallelLogger: {e:?}");
-                }
-            }
-        }
-        // Let's allow it to be None
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -256,7 +268,7 @@ mod test {
         let logger3 = ChannelLogger::new(LevelFilter::Error, tx3);
 
         // due to the log crate working across single unit tests, we can only call init once...
-        ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![logger, logger2, logger3]);
+        let shutdown_handle = ParallelLogger::init(LevelFilter::Info, ParallelMode::Sequential, vec![logger, logger2, logger3]);
 
         log::info!("Test message");
         let msg = rx.recv_timeout(Duration::from_secs(2));
@@ -282,6 +294,8 @@ mod test {
         assert!(msg.line.is_some());
 
         assert!(rx3.recv_timeout(Duration::from_secs(2)).is_err());
+
+        assert_eq!(shutdown_handle.shutdown(), 1);
     }
 
     #[test]
